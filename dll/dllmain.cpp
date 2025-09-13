@@ -40,14 +40,10 @@ end
 
 // Function to execute Lua code
 void ExecuteLua(const char* code) {
-    // Get the base address of the current process (Ascension.exe)
-    uintptr_t baseAddress = (uintptr_t)GetModuleHandle(NULL);
-    if (baseAddress == 0) {
-        return; // Cannot get module handle
-    }
+    // After reverse engineering, the function appears to be at a static absolute address.
+    constexpr uintptr_t FrameScript_Execute_Address = 0x005EEB70;
 
-    // Calculate the absolute address of the function
-    auto func = (FrameScript_ExecuteBuffer_t)(baseAddress + FRAME_SCRIPT_EXECUTE_OFFSET);
+    auto func = (FrameScript_ExecuteBuffer_t)FrameScript_Execute_Address;
 
     // Call the function
     func(code, "JulesPipe", 0);
@@ -55,6 +51,10 @@ void ExecuteLua(const char* code) {
 
 // The main function for our pipe server thread
 DWORD WINAPI PipeServerThread(LPVOID lpvParam) {
+    // Wait 10 seconds for the game to fully initialize before we do anything.
+    // This helps prevent crashes on startup.
+    Sleep(10000);
+
     // First, register the slash command
     ExecuteLua(JULES_COMMAND_LUA);
 
