@@ -24,6 +24,10 @@ WriteProcessMemory.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.LPCVOI
 CreateRemoteThread = kernel32.CreateRemoteThread
 CreateRemoteThread.argtypes = [wintypes.HANDLE, wintypes.LPVOID, ctypes.c_size_t, wintypes.LPVOID, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
 
+CloseHandle = kernel32.CloseHandle
+CloseHandle.argtypes = [wintypes.HANDLE]
+CloseHandle.restype = wintypes.BOOL
+
 GetLastError = kernel32.GetLastError
 
 # Toolhelp for process enumeration
@@ -67,30 +71,60 @@ def find_process(name: str) -> int:
 def inject(pid, dll_path):
     h_process = OpenProcess(PROCESS_ALL_ACCESS, False, pid)
     if not h_process:
-        raise OSError('OpenProcess failed')
-    dll_bytes = dll_path.encode('ascii') + b'\x00'
-    alloc = VirtualAllocEx(h_process, None, len(dll_bytes), 0x1000 | 0x2000, 0x40)
-    WriteProcessMemory(h_process, alloc, dll_bytes, len(dll_bytes), None)
-    h_kernel32 = kernel32.GetModuleHandleW('kernel32.dll')
-    load_library = kernel32.GetProcAddress(h_kernel32, b'LoadLibraryA')
-    thread = CreateRemoteThread(h_process, None, 0, load_library, alloc, 0, None)
-    if not thread:
-        raise OSError('CreateRemoteThread failed')
-    return thread
+        raise OSError(f'OpenProcess failed for PID {pid}')
+
+    thread = None
+    try:
+        dll_bytes = dll_path.encode('utf-8') + b'\x00'
+        alloc = VirtualAllocEx(h_process, None, len(dll_bytes), 0x1000 | 0x2000, 0x40)
+        if not alloc:
+            raise OSError('VirtualAllocEx failed')
+
+        if not WriteProcessMemory(h_process, alloc, dll_bytes, len(dll_bytes), None):
+            raise OSError('WriteProcessMemory failed')
+
+        h_kernel32 = kernel32.GetModuleHandleW('kernel32.dll')
+        load_library = kernel32.GetProcAddress(h_kernel32, b'LoadLibraryA')
+
+        thread = CreateRemoteThread(h_process, None, 0, load_library, alloc, 0, None)
+        if not thread:
+            raise OSError('CreateRemoteThread failed')
+
+        # Wait for the thread to finish. This is good practice.
+        ctypes.windll.kernel32.WaitForSingleObject(thread, 0xFFFFFFFF) # Wait indefinitely
+
+    finally:
+        if thread:
+            CloseHandle(thread)
+        if h_process:
+            CloseHandle(h_process)
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <lua_executor.dll>")
+    dll_name = 'dllmain.dll'
+    dll_path = os.path.abspath(os.path.join('out', dll_name))
+
+    if not os.path.exists(dll_path):
+        print(f"Error: DLL not found at '{dll_path}'")
+        print("Please compile the DLL first using a MinGW g++ compiler.")
+        print(r"Example: i686-w64-mingw32-g++ -shared -o out\dllmain.dll dll\dllmain.cpp -static-libgcc -static-libstdc++")
         return
-    dll_path = os.path.abspath(sys.argv[1])
+
     pid = find_process('Ascension.exe')
     if not pid:
-        print('Ascension.exe not found')
+        print('Ascension.exe not found. Is the game running?')
         return
-    print(f'Injecting into PID {pid}')
-    inject(pid, dll_path)
-    print('DLL injected. You can now call RunLua via another tool.')
+
+    print(f'Found Ascension.exe with PID {pid}.')
+    print(f'Injecting "{dll_path}"...')
+
+    try:
+        inject(pid, dll_path)
+        print('DLL injected successfully.')
+        print('You can now use `python scripts/send_lua.py "your_lua_code()"` to execute commands.')
+    except OSError as e:
+        print(f"Injection failed: {e}")
+        print(f"Win32 Error Code: {GetLastError()}")
 
 if __name__ == '__main__':
     main()
