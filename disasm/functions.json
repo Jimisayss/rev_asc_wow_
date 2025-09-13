@@ -1,0 +1,23 @@
+{
+  "Wow.exe": {
+    "FrameScript_ExecuteBuffer": null,
+    "strings": {
+      "FrameScript": "0x9ecc31",
+      "Lua": "0xa02308"
+    }
+  },
+  "Wow_fixed.exe": {
+    "FrameScript_ExecuteBuffer": null,
+    "strings": {
+      "FrameScript": "0x9ecc31",
+      "Lua": "0xa02308"
+    }
+  },
+  "Ascension.exe": {
+    "FrameScript_ExecuteBuffer": null,
+    "strings": {
+      "FrameScript": "0x9ecc31",
+      "Lua": "0xa02308"
+    }
+  }
+}

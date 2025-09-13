@@ -1,0 +1,6 @@
+# Ignore generated binaries
+binaries/*.exe
+patched/*.exe
+dll/*.dll
+__pycache__/
+*.pyc
