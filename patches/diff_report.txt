@@ -1,2 +1,0 @@
-Comparing binaries/Wow.exe -> binaries/Ascension.exe
-0x0040B7D3: call 0x406d70 -> missing

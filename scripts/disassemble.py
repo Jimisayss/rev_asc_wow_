@@ -9,9 +9,13 @@ Outputs disassembly lines of the form:
 import argparse
 import sys
 import lief
+import os
 from capstone import Cs, CS_ARCH_X86, CS_MODE_32
 
 def disassemble(path, out_path, limit=None):
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
     pe = lief.parse(path)
     text = pe.get_section('.text')
     code = bytes(text.content)
@@ -22,7 +26,8 @@ def disassemble(path, out_path, limit=None):
     count = 0
     with open(out_path, 'w') as f:
         for insn in md.disasm(code, base):
-            f.write(f"0x{insn.address:08X}: {insn.mnemonic} {insn.op_str}\n")
+            byte_str = " ".join(f"{b:02X}" for b in insn.bytes)
+            f.write(f"0x{insn.address:08X}: {byte_str:<20} {insn.mnemonic} {insn.op_str}\n")
             count += 1
             if limit and count >= limit:
                 break
