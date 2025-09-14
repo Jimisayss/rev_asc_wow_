@@ -6,8 +6,6 @@
 
 struct JulesInit {
     uintptr_t frameScriptExecuteBufferAddr;
-    uintptr_t frameScriptRegisterAddr;
-    uintptr_t endSceneAddr;
 };
 
 struct SharedData {

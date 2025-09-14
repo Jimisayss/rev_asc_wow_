@@ -14,16 +14,12 @@ FILE_MAP_ALL_ACCESS = 0xF001F
 SHARED_MEM_NAME = b"JulesSharedMemory"
 BUF_SIZE = 2048
 
-SIG_FRAMESCRIPT_EXECUTE = "55 8B EC 83 E4 F8 8B 4D 08 85 C9 74 1A"
-SIG_FRAMESCRIPT_REGISTER = "55 8B EC 83 E4 F8 83 EC 14 53 56 8B F1 57 8B 46 04"
-SIG_ENDSCENE = "55 8B EC 83 E4 F8 81 EC ?? ?? 00 00 53 56 57"
+SIG_FRAMESCRIPT_EXECUTE = "68 70 EB 5E 00"
 
 # --- IPC Structs ---
 class JulesInit(ctypes.Structure):
     _fields_ = [
         ("frameScriptExecuteBufferAddr", ctypes.c_void_p),
-        ("frameScriptRegisterAddr", ctypes.c_void_p),
-        ("endSceneAddr", ctypes.c_void_p),
     ]
 
 class SharedData(ctypes.Structure):
@@ -43,9 +39,9 @@ def get_process_id_by_name(process_name):
 def get_module_info(pid, module_name):
     try:
         p = psutil.Process(pid)
-        for mod in p.memory_maps():
+        for mod in p.memory_maps(grouped=False):
             if mod.path and mod.path.endswith(module_name):
-                return int(mod.addr, 16), mod.size
+                return mod.addr, mod.size
     except psutil.NoSuchProcess:
         return None, None
     return None, None
@@ -94,18 +90,13 @@ def main():
     print("\nScanning for function signatures...")
     h_process = ctypes.WinDLL('kernel32').OpenProcess(PROCESS_ALL_ACCESS, False, pid)
     wow_base, wow_size = get_module_info(pid, args.proc_name)
-    d3d9_base, d3d9_size = get_module_info(pid, "d3d9.dll")
 
     fs_addr = find_signature(h_process, wow_base, wow_size, SIG_FRAMESCRIPT_EXECUTE)
-    fsr_addr = find_signature(h_process, wow_base, wow_size, SIG_FRAMESCRIPT_REGISTER)
-    es_addr = find_signature(h_process, d3d9_base, d3d9_size, SIG_ENDSCENE) if d3d9_base else None
 
     print(f"  -> FrameScript_ExecuteBuffer: {hex(fs_addr if fs_addr else 0)}")
-    print(f"  -> FrameScript_Register:      {hex(fsr_addr if fsr_addr else 0)}")
-    print(f"  -> EndScene:                  {hex(es_addr if es_addr else 0)}")
 
-    if not all([fs_addr, fsr_addr, es_addr]):
-        print("\nError: Could not find all required function signatures. Aborting.")
+    if not fs_addr:
+        print("\nError: Could not find FrameScript_ExecuteBuffer signature. Aborting.")
         return
 
     print("\nCreating shared memory...")
@@ -119,7 +110,7 @@ def main():
     shared_buffer = SharedData.from_address(p_buf)
 
     print("Writing initialization data...")
-    shared_buffer.init = JulesInit(fs_addr, fsr_addr, es_addr)
+    shared_buffer.init = JulesInit(fs_addr)
     shared_buffer.is_busy = False
     shared_buffer.lua_code = b''
 
