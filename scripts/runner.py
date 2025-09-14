@@ -207,6 +207,8 @@ def main() -> None:
     base = get_module_base(pid, args.process)
     if not base:
         raise SystemExit("Failed to locate module base")
+    if args.rva is None:
+        raise SystemExit("Target function RVA must be provided (as argument or in config.json)")
     run_shell(pid, base, int(str(args.rva), 16))
 
 
