@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Injects and executes shellcode in a running Ascension.exe process to run Lua code."""
+"""Injects and executes shellcode in a running Ascension.exe process to run Lua code via APC injection."""
 import ctypes
 import sys
 import os
-import time
 from ctypes import wintypes
 from keystone import Ks, KS_ARCH_X86, KS_MODE_32
 
-# --- Existing ctypes definitions from the original script ---
+# --- Ctypes definitions ---
 kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 PROCESS_ALL_ACCESS = 0x1F0FFF
 MEM_COMMIT = 0x00001000
 MEM_RESERVE = 0x00002000
 PAGE_EXECUTE_READWRITE = 0x40
 TH32CS_SNAPPROCESS = 0x00000002
+TH32CS_SNAPTHREAD = 0x00000004
+THREAD_SET_CONTEXT = 0x0010
 
 class PROCESSENTRY32(ctypes.Structure):
     _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD), ('th32ProcessID', wintypes.DWORD),
@@ -22,7 +23,12 @@ class PROCESSENTRY32(ctypes.Structure):
                 ('pcPriClassBase', ctypes.c_long), ('dwFlags', wintypes.DWORD),
                 ('szExeFile', wintypes.CHAR * wintypes.MAX_PATH)]
 
-# --- Function definitions ---
+class THREADENTRY32(ctypes.Structure):
+    _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD), ('th32ThreadID', wintypes.DWORD),
+                ('th32OwnerProcessID', wintypes.DWORD), ('tpBasePri', wintypes.LONG),
+                ('tpDeltaPri', wintypes.LONG), ('dwFlags', wintypes.DWORD)]
+
+# --- WinAPI Function Prototypes ---
 OpenProcess = kernel32.OpenProcess
 OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 OpenProcess.restype = wintypes.HANDLE
@@ -33,14 +39,6 @@ VirtualAllocEx.restype = wintypes.LPVOID
 
 WriteProcessMemory = kernel32.WriteProcessMemory
 WriteProcessMemory.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.LPCVOID, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
-
-CreateRemoteThread = kernel32.CreateRemoteThread
-CreateRemoteThread.argtypes = [wintypes.HANDLE, wintypes.LPVOID, ctypes.c_size_t, wintypes.LPVOID, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
-CreateRemoteThread.restype = wintypes.HANDLE
-
-WaitForSingleObject = kernel32.WaitForSingleObject
-WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-WaitForSingleObject.restype = wintypes.DWORD
 
 VirtualFreeEx = kernel32.VirtualFreeEx
 VirtualFreeEx.argtypes = [wintypes.HANDLE, wintypes.LPVOID, ctypes.c_size_t, wintypes.DWORD]
@@ -56,6 +54,22 @@ Process32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
 
 Process32Next = kernel32.Process32Next
 Process32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
+
+Thread32First = kernel32.Thread32First
+Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+Thread32First.restype = wintypes.BOOL
+
+Thread32Next = kernel32.Thread32Next
+Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+Thread32Next.restype = wintypes.BOOL
+
+OpenThread = kernel32.OpenThread
+OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+OpenThread.restype = wintypes.HANDLE
+
+QueueUserAPC = kernel32.QueueUserAPC
+QueueUserAPC.argtypes = [wintypes.LPVOID, wintypes.HANDLE, wintypes.ULONG_PTR]
+QueueUserAPC.restype = wintypes.DWORD
 
 def find_process_id(name: str) -> int:
     """Finds a process ID by its executable name."""
@@ -75,18 +89,15 @@ def find_process_id(name: str) -> int:
     CloseHandle(snapshot)
     return 0
 
-def execute_lua(pid: int, lua_code: str):
-    """Injects shellcode to execute a Lua string in the target process."""
+def apc_inject_and_run_lua(pid: int, lua_code: str):
+    """Injects shellcode via APC to execute a Lua string in the target process."""
     h_process = OpenProcess(PROCESS_ALL_ACCESS, False, pid)
     if not h_process:
         raise ctypes.WinError(ctypes.get_last_error())
 
-    # --- Prepare data to be written into the target process ---
     lua_code_bytes = lua_code.encode('ascii') + b'\x00'
-    source_name_bytes = b'JulesInjection\x00'
+    source_name_bytes = b'JulesAPC\x00'
 
-    # --- Allocate memory for shellcode and data ---
-    # Total size = shellcode (around 50 bytes) + lua code + source name
     total_size = 100 + len(lua_code_bytes) + len(source_name_bytes)
     mem_addr = VirtualAllocEx(h_process, None, total_size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)
     if not mem_addr:
@@ -94,47 +105,66 @@ def execute_lua(pid: int, lua_code: str):
 
     print(f"Allocated memory at 0x{mem_addr:08X}")
 
-    # --- Write data strings first ---
-    addr_lua_code = mem_addr + 100 # Place it after the shellcode area
+    addr_lua_code = mem_addr + 100
     addr_source_name = addr_lua_code + len(lua_code_bytes)
 
     bytes_written = ctypes.c_size_t(0)
     WriteProcessMemory(h_process, addr_lua_code, lua_code_bytes, len(lua_code_bytes), ctypes.byref(bytes_written))
     WriteProcessMemory(h_process, addr_source_name, source_name_bytes, len(source_name_bytes), ctypes.byref(bytes_written))
 
-    # --- Assemble the shellcode ---
     ks = Ks(KS_ARCH_X86, KS_MODE_32)
     FRAMESCRIPT_EXECUTE_BUFFER = 0x00406D70
 
     assembly = f"""
+        pushad
         push 0
         push {addr_source_name}
         push {addr_lua_code}
         call {FRAMESCRIPT_EXECUTE_BUFFER}
         add esp, 12
+        popad
         ret
     """
 
     shellcode, _ = ks.asm(assembly)
     shellcode_bytes = bytes(shellcode)
 
-    # --- Write the shellcode ---
     WriteProcessMemory(h_process, mem_addr, shellcode_bytes, len(shellcode_bytes), ctypes.byref(bytes_written))
     print(f"Wrote {len(shellcode_bytes)} bytes of shellcode.")
 
-    # --- Execute the shellcode ---
-    h_thread = CreateRemoteThread(h_process, None, 0, mem_addr, None, 0, None)
-    if not h_thread:
+    h_snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+    entry = THREADENTRY32()
+    entry.dwSize = ctypes.sizeof(THREADENTRY32)
+
+    if not Thread32First(h_snapshot, ctypes.byref(entry)):
+        CloseHandle(h_snapshot)
         raise ctypes.WinError(ctypes.get_last_error())
 
-    print("Executing remote thread...")
-    WaitForSingleObject(h_thread, 0xFFFFFFFF) # Wait indefinitely
+    queued_count = 0
+    while True:
+        if entry.th32OwnerProcessID == pid:
+            h_thread = OpenThread(THREAD_SET_CONTEXT | 0x0040, False, entry.th32ThreadID) # THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION
+            if h_thread:
+                ret = QueueUserAPC(mem_addr, h_thread, 0)
+                if ret:
+                    queued_count += 1
+                CloseHandle(h_thread)
 
-    # --- Cleanup ---
-    VirtualFreeEx(h_process, mem_addr, 0, 0x8000) # MEM_RELEASE
-    CloseHandle(h_thread)
+        if not Thread32Next(h_snapshot, ctypes.byref(entry)):
+            break
+
+    CloseHandle(h_snapshot)
+
+    if queued_count == 0:
+        VirtualFreeEx(h_process, mem_addr, 0, 0x8000) # MEM_RELEASE
+        CloseHandle(h_process)
+        raise RuntimeError("Failed to queue APC to any thread.")
+
+    print(f"Successfully queued APC to {queued_count} threads. Execution should happen shortly.")
+
+    # Memory is intentionally leaked here for this educational example,
+    # as we cannot know when the APC has finished executing.
     CloseHandle(h_process)
-    print("Execution finished and cleaned up.")
 
 def main():
     if len(sys.argv) < 2:
@@ -163,7 +193,7 @@ def main():
     print(f'Found Ascension.exe with PID {pid}.')
 
     try:
-        execute_lua(pid, lua_to_run)
+        apc_inject_and_run_lua(pid, lua_to_run)
     except Exception as e:
         print(f"An error occurred: {e}")
 
