@@ -201,6 +201,8 @@ def main() -> None:
                     help="Target function RVA (hex)")
     args = ap.parse_args()
 
+    if args.process is None or args.rva is None:
+        ap.error("Both 'process' and 'rva' arguments must be provided, either via command line or config.json.")
     pid = find_process(args.process)
     if not pid:
         raise SystemExit(f"{args.process} not found")
