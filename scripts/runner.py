@@ -4,7 +4,10 @@ import argparse
 import json
 import logging
 import ctypes
+
 import struct
+
+
 from ctypes import wintypes
 from pathlib import Path
 
@@ -121,6 +124,7 @@ def alloc_write(h_process, data: bytes) -> int:
 def load_config() -> dict:
     """Load configuration from config.json located next to this script."""
     path = Path(__file__).with_name("config.json")
+
     if not path.exists():
         logging.warning("config.json not found; using command-line defaults")
         return {}
@@ -130,6 +134,10 @@ def load_config() -> dict:
         except json.JSONDecodeError as exc:
             logging.error("Failed to parse config.json: %s", exc)
             return {}
+
+    with path.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
 
 
 def run_shell(pid: int, base: int, rva: int) -> None:
@@ -148,6 +156,7 @@ def run_shell(pid: int, base: int, rva: int) -> None:
             if line.strip().lower() in {"quit", "exit"}:
                 break
             buf = line.encode("ascii") + b"\x00"
+
             str_addr = alloc_write(h_process, buf)
 
             # Stub to call the target function with the string pointer and
@@ -187,6 +196,21 @@ def run_shell(pid: int, base: int, rva: int) -> None:
             else:
                 err = GetLastError()
                 logging.error("VirtualFreeEx failed for buffer: %d", err)
+
+            addr = alloc_write(h_process, buf)
+            thread = CreateRemoteThread(h_process, None, 0, target, addr, 0, None)
+            if not thread:
+                err = GetLastError()
+                logging.error("CreateRemoteThread failed: %d", err)
+                continue
+            logging.info("Thread created at 0x%08X", target)
+            WaitForSingleObject(thread, INFINITE)
+            if VirtualFreeEx(h_process, addr, 0, MEM_RELEASE):
+                logging.info("Freed remote buffer at 0x%08X", addr)
+            else:
+                err = GetLastError()
+                logging.error("VirtualFreeEx failed: %d", err)
+
             CloseHandle(thread)
     finally:
         kernel32.CloseHandle(h_process)
@@ -203,14 +227,18 @@ def main() -> None:
 
     if args.process is None or args.rva is None:
         ap.error("Both 'process' and 'rva' arguments must be provided, either via command line or config.json.")
+
     pid = find_process(args.process)
     if not pid:
         raise SystemExit(f"{args.process} not found")
     base = get_module_base(pid, args.process)
     if not base:
         raise SystemExit("Failed to locate module base")
+
     if args.rva is None:
         raise SystemExit("Target function RVA must be provided (as argument or in config.json)")
+
+
     run_shell(pid, base, int(str(args.rva), 16))
 
 
